@@ -10,7 +10,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.1",
     "@tailwindcss/postcss": "^4.1.12",
+    "@vercel/blob": "^1.1.1",
     "mysql2": "^3.14.3",
     "next": "15.5.2",
     "postcss": "^8.5.6",

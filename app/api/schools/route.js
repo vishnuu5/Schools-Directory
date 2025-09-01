@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs/promises";
-import { getDb, ensureSchoolsTable } from "@/lib/db";
+import { ensureSchoolsTable, listSchools, insertSchool } from "@/lib/db";
+import { put } from "@vercel/blob";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const isDev = process.env.NODE_ENV !== "production";
 
@@ -15,16 +17,58 @@ function jsonError(fallback, err, status = 500) {
   return NextResponse.json({ success: false, error: message }, { status });
 }
 
+async function saveImage(imageFile) {
+  if (!imageFile || typeof imageFile !== "object" || !("name" in imageFile))
+    return null;
+
+  const rawName = String(imageFile.name || "upload.bin");
+  const safeName = rawName
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9.\-_]/g, "");
+  const fileName = `${Date.now()}-${safeName}`;
+
+  const useBlob = !!process.env.VERCEL || process.env.USE_BLOB === "true";
+
+  if (useBlob) {
+    try {
+      const bytes = await imageFile.arrayBuffer();
+      const res = await put(`schools/${fileName}`, new Uint8Array(bytes), {
+        access: "public",
+        token: process.env.BLOB_READ_WRITE_TOKEN,
+      });
+      return res.url;
+    } catch (e) {
+      console.error("Blob upload error:", e);
+      throw Object.assign(
+        new Error(
+          "Failed to upload image to storage. Check Vercel Blob integration and token."
+        ),
+        {
+          code: "BLOB_UPLOAD_FAILED",
+        }
+      );
+    }
+  }
+
+  // Local dev: write to public/schoolImages
+  const imagesDir = path.join(process.cwd(), "public", "schoolImages");
+  await fs.mkdir(imagesDir, { recursive: true });
+  const dest = path.join(imagesDir, fileName);
+  const bytes = await imageFile.arrayBuffer();
+  await fs.writeFile(dest, Buffer.from(bytes));
+  return `/schoolImages/${fileName}`;
+}
+
 export async function GET() {
   try {
     await ensureSchoolsTable();
-    const db = getDb();
-    const [rows] = await db.query(
-      "SELECT id, name, address, city, image FROM schools ORDER BY id DESC"
-    );
+    const rows = await listSchools();
     return NextResponse.json({ success: true, data: rows });
   } catch (err) {
-    if (err?.code === "DB_CONFIG_MISSING") {
+    if (
+      err?.code === "DB_CONFIG_MISSING" ||
+      err?.code === "DB_LOCALHOST_IN_PROD"
+    ) {
       return jsonError(err.message, err, 500);
     }
     console.error("GET /api/schools error:", err);
@@ -59,41 +103,27 @@ export async function POST(req) {
       );
     }
 
-    // Save image to /public/schoolImages
     let imagePath = null;
-    if (imageFile && typeof imageFile === "object" && "name" in imageFile) {
-      const imagesDir = path.join(process.cwd(), "public", "schoolImages");
-      await fs.mkdir(imagesDir, { recursive: true });
-      const rawName = String(imageFile.name || "upload.bin");
-      const safeName = rawName
-        .replace(/\s+/g, "-")
-        .replace(/[^a-zA-Z0-9.\-_]/g, "");
-      const fileName = `${Date.now()}-${safeName}`;
-      const dest = path.join(imagesDir, fileName);
-
-      try {
-        const bytes = await imageFile.arrayBuffer();
-        await fs.writeFile(dest, Buffer.from(bytes));
-        imagePath = `/schoolImages/${fileName}`;
-      } catch (e) {
-        console.error("Image write error:", e);
-        return jsonError(
-          "Failed to save image to disk. Use a storage service in serverless environments.",
-          e,
-          500
-        );
-      }
+    if (imageFile) {
+      imagePath = await saveImage(imageFile);
     }
 
-    const db = getDb();
-    await db.query(
-      "INSERT INTO schools (name, address, city, state, contact, image, email_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [name, address, city, state, contact, imagePath, email_id]
-    );
+    await insertSchool({
+      name,
+      address,
+      city,
+      state,
+      contact,
+      image: imagePath,
+      email_id,
+    });
 
     return NextResponse.json({ success: true });
   } catch (err) {
-    if (err?.code === "DB_CONFIG_MISSING") {
+    if (
+      err?.code === "DB_CONFIG_MISSING" ||
+      err?.code === "DB_LOCALHOST_IN_PROD"
+    ) {
       return jsonError(err.message, err, 500);
     }
     console.error("POST /api/schools error:", err);
