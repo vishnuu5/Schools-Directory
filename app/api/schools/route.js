@@ -10,11 +10,15 @@ export const dynamic = "force-dynamic";
 const isDev = process.env.NODE_ENV !== "production";
 
 function jsonError(fallback, err, status = 500) {
+  const code = err?.code || "ERR";
   const message =
     isDev && err && (err.message || err.code)
-      ? `[${err.code || "ERR"}] ${err.message}`
+      ? `[${code}] ${err.message}`
       : fallback;
-  return NextResponse.json({ success: false, error: message }, { status });
+  return NextResponse.json(
+    { success: false, error: message, code },
+    { status }
+  );
 }
 
 async function saveImage(imageFile) {
@@ -27,15 +31,21 @@ async function saveImage(imageFile) {
     .replace(/[^a-zA-Z0-9.\-_]/g, "");
   const fileName = `${Date.now()}-${safeName}`;
 
-  const useBlob = !!process.env.VERCEL || process.env.USE_BLOB === "true";
+  // Use Blob if explicitly enabled or if running on Vercel AND token exists
+  const blobConfigured = !!process.env.BLOB_READ_WRITE_TOKEN;
+  const useBlob =
+    process.env.USE_BLOB === "true" || (!!process.env.VERCEL && blobConfigured);
 
   if (useBlob) {
     try {
       const bytes = await imageFile.arrayBuffer();
-      const res = await put(`schools/${fileName}`, new Uint8Array(bytes), {
-        access: "public",
-        token: process.env.BLOB_READ_WRITE_TOKEN,
-      });
+      const data = new Uint8Array(bytes);
+      const options = { access: "public" };
+      if (process.env.BLOB_READ_WRITE_TOKEN) {
+        // optional: SDK also reads the env var automatically, but we pass it when present
+        options.token = process.env.BLOB_READ_WRITE_TOKEN;
+      }
+      const res = await put(`schools/${fileName}`, data, options);
       return res.url;
     } catch (e) {
       console.error("Blob upload error:", e);
@@ -48,6 +58,16 @@ async function saveImage(imageFile) {
         }
       );
     }
+  }
+
+  // In production without Blob configured, bail with a clear error (filesystem is not viable on Vercel)
+  if (process.env.VERCEL) {
+    throw Object.assign(
+      new Error(
+        "Image storage not configured in production. Enable Vercel Blob (adds BLOB_READ_WRITE_TOKEN) or set USE_BLOB=true."
+      ),
+      { code: "BLOB_NOT_CONFIGURED" }
+    );
   }
 
   // Local dev: write to public/schoolImages
@@ -91,14 +111,18 @@ export async function POST(req) {
 
     if (!name || !address || !city || !state || !contact || !email_id) {
       return NextResponse.json(
-        { success: false, error: "All fields are required" },
+        {
+          success: false,
+          error: "All fields are required",
+          code: "VALIDATION_ERROR",
+        },
         { status: 400 }
       );
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email_id)) {
       return NextResponse.json(
-        { success: false, error: "Invalid email" },
+        { success: false, error: "Invalid email", code: "INVALID_EMAIL" },
         { status: 400 }
       );
     }
