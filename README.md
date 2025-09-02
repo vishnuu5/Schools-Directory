@@ -28,7 +28,7 @@ https://github.com/vishnuu5/Schools-Directory.git
 
 ---
 
-[Show-Demo]()
+[Show-Demo](https://schools-directory-ten.vercel.app)
 
 ## MySQL Setup
 
